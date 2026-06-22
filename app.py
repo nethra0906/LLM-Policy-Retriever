@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
+import traceback
+
 
 # Load Gemini API key
 load_dotenv()
@@ -17,7 +19,7 @@ api_key = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=api_key)
 
 # Initialize model and embedder
-model = genai.GenerativeModel("gemini-1.5-flash-8b")
+model = genai.GenerativeModel("gemini-2.5-flash")
 embedder = SentenceTransformer("all-MiniLM-L12-v2")
 
 # Load static index and metadata
@@ -71,6 +73,8 @@ def get_top_chunks_dynamic(query, dynamic_chunks, k=3):
 # --- Prompt Answering ---
 def generate_answer(query, top_chunks):
     combined_context = "\n\n".join([c["chunk_text"] for c in top_chunks])
+    print("Context length:", len(combined_context))
+    print("Question:", query)
     prompt = f"""You are a helpful assistant designed to extract direct answers from insurance policy documents.
 Given the policy excerpts below, answer the user's question clearly and concisely in **one sentence**. Do not include justifications, explanations, or formatting — just the answer.
 
@@ -110,7 +114,10 @@ def hackrx_run():
 
         return jsonify({"answers": answers})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        traceback.print_exc()
+        return jsonify({
+            "error": str(e)
+        }), 500
 
 # --- Server Run ---
 if __name__ == "__main__":
