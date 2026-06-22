@@ -1,126 +1,131 @@
+"""
+Flask API for the Policy Intelligence Platform.
+
+Preserves the legacy HackRx endpoint while exposing full platform capabilities.
+"""
+
+from __future__ import annotations
+
 import os
-import json
-import pickle
-import tempfile
-import requests
-import pdfplumber
-import faiss
-import numpy as np
-from dotenv import load_dotenv
-from flask import Flask, request, jsonify
-from sentence_transformers import SentenceTransformer
-import google.generativeai as genai
 import traceback
 
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request
 
-# Load Gemini API key
+from policy_intel.logging_config import setup_logging
+from policy_intel.pipeline import PolicyPipeline
+
 load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=api_key)
+logger = setup_logging()
 
-# Initialize model and embedder
-model = genai.GenerativeModel("gemini-2.5-flash")
-embedder = SentenceTransformer("all-MiniLM-L12-v2")
-
-# Load static index and metadata
-'''index = faiss.read_index("emdeddings/chunks.index")
-with open("emdeddings/metadata.pkl", "rb") as f:
-    metadata = pickle.load(f)
-
-
-
-# --- FAISS Retrieval for Known Docs ---
-def get_top_chunks_static(query, k=3):
-    query_embedding = embedder.encode([query])
-    distances, indices = index.search(query_embedding, k)
-    return [metadata[i] for i in indices[0]]'''
 app = Flask(__name__)
-# --- PDF Parsing + Embedding for Dynamic Docs ---
-def extract_chunks_from_pdf_url(pdf_url, chunk_size=200):
-    response = requests.get(pdf_url)
-    response.raise_for_status()
+_pipeline: PolicyPipeline | None = None
 
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        tmp.write(response.content)
-        tmp_path = tmp.name
 
-    chunks = []
-    with pdfplumber.open(tmp_path) as pdf:
-        full_text = "\n".join([page.extract_text() or "" for page in pdf.pages])
-    words = full_text.split()
+def get_pipeline() -> PolicyPipeline:
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = PolicyPipeline()
+    return _pipeline
 
-    for i in range(0, len(words), chunk_size):
-        chunk_text = " ".join(words[i:i + chunk_size])
-        chunks.append({"chunk_text": chunk_text})
 
-    return chunks
+@app.route("/health", methods=["GET"])
+def health():
+    try:
+        pipeline = get_pipeline()
+        return jsonify(
+            {
+                "status": "ok",
+                "chunks_indexed": len(pipeline.vector_store.chunks),
+                "policies": len(pipeline.list_policies()),
+            }
+        )
+    except Exception as exc:
+        return jsonify({"status": "error", "detail": str(exc)}), 503
 
-def get_top_chunks_dynamic(query, dynamic_chunks, k=3):
-    texts = [chunk["chunk_text"] for chunk in dynamic_chunks]
-    embeddings = embedder.encode(texts)
-    embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
 
-    query_embedding = embedder.encode([query])
-    query_embedding = query_embedding / np.linalg.norm(query_embedding, axis=1, keepdims=True)
+@app.route("/api/v1/policies", methods=["GET"])
+def list_policies():
+    try:
+        policies = get_pipeline().list_policies()
+        return jsonify({"policies": policies})
+    except Exception as exc:
+        logger.exception("Failed to list policies")
+        return jsonify({"error": str(exc)}), 500
 
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(embeddings.astype(np.float32))
 
-    distances, indices = index.search(query_embedding, k)
-    return [dynamic_chunks[i] for i in indices[0]]
+@app.route("/api/v1/query", methods=["POST"])
+def query():
+    """
+    Enterprise query endpoint with citations and confidence.
 
-# --- Prompt Answering ---
-def generate_answer(query, top_chunks):
-    combined_context = "\n\n".join([c["chunk_text"] for c in top_chunks])
-    print("Context length:", len(combined_context))
-    print("Question:", query)
-    prompt = f"""You are a helpful assistant designed to extract direct answers from insurance policy documents.
-Given the policy excerpts below, answer the user's question clearly and concisely in **one sentence**. Do not include justifications, explanations, or formatting — just the answer.
+    Body:
+      - question (str) OR questions (list[str])
+      - documents (str, optional): PDF URL for dynamic ingestion
+      - policies (list[str], optional): filter by source_doc names
+    """
+    try:
+        data = request.get_json(force=True) or {}
+        pdf_url = data.get("documents")
+        policy_filter = data.get("policies")
 
---- POLICY EXCERPTS ---
-{combined_context}
+        if "questions" in data:
+            questions = data["questions"]
+        elif "question" in data:
+            questions = [data["question"]]
+        else:
+            return jsonify({"error": "Provide 'question' or 'questions'"}), 400
 
---- USER QUESTION ---
-{query}
+        pipeline = get_pipeline()
+        results = pipeline.query_batch(
+            questions=questions,
+            pdf_url=pdf_url,
+            policy_filter=policy_filter,
+            mode="platform",
+        )
 
-Answer:"""
-    response = model.generate_content(prompt)
-    return response.text.strip()
+        payload = {
+            "results": [result.to_dict() for result in results],
+        }
+        if len(results) == 1:
+            payload["result"] = results[0].to_dict()
 
-# --- Main Endpoint ---
+        return jsonify(payload)
+    except Exception as exc:
+        logger.exception("Query failed")
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/hackrx/run", methods=["POST"])
 def hackrx_run():
+    """Legacy HackRx endpoint — returns plain answer strings."""
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         return jsonify({"error": "Missing or invalid Authorization header"}), 401
 
     try:
-        data = request.get_json()
-        pdf_url = data.get("documents")  # optional
+        data = request.get_json(force=True) or {}
+        pdf_url = data.get("documents")
         questions = data.get("questions", [])
 
-        if pdf_url:
-            dynamic_chunks = extract_chunks_from_pdf_url(pdf_url)
-            answers = [
-                generate_answer(q, get_top_chunks_dynamic(q, dynamic_chunks))
-                for q in questions
-            ]
-        else:
-            answers = [
-                generate_answer(q, get_top_chunks_static(q))
-                for q in questions
-            ]
+        if not questions:
+            return jsonify({"error": "No questions provided"}), 400
+
+        pipeline = get_pipeline()
+        results = pipeline.query_batch(
+            questions=questions,
+            pdf_url=pdf_url,
+            mode="hackrx",
+        )
+        answers = [result.answer for result in results]
 
         return jsonify({"answers": answers})
-    except Exception as e:
+    except Exception as exc:
+        logger.exception("HackRx request failed")
         traceback.print_exc()
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return jsonify({"error": str(exc)}), 500
 
-# --- Server Run ---
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
-
