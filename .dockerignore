@@ -10,4 +10,9 @@ __pycache__
 venv/
 .idea/
 *.ipynb
+tests/
+pytest.ini
+requirements-dev.txt
+.git/
+.pytest_cache/
 

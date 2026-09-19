@@ -137,6 +137,10 @@ class EphemeralVectorStore:
     def __init__(self, chunks: list[PolicyChunk], embedder: SentenceTransformer) -> None:
         self.chunks = chunks
         self.embedder = embedder
+        self.index: faiss.Index | None = None
+        if not chunks:
+            return
+
         texts = [chunk.chunk_text for chunk in chunks]
         vectors = self._encode(texts)
 
@@ -151,7 +155,7 @@ class EphemeralVectorStore:
         return (vectors / norms).astype(np.float32)
 
     def search(self, query: str, top_k: int = 20) -> list[tuple[PolicyChunk, float]]:
-        if not self.chunks:
+        if not self.chunks or self.index is None:
             return []
 
         query_vector = self._encode([query])[0]

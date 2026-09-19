@@ -15,8 +15,10 @@ class BM25Index:
     def __init__(self, chunks: list[PolicyChunk]) -> None:
         self.chunks = chunks
         self._chunk_indices = list(range(len(chunks)))
-        tokenized = [self._tokenize(chunk.chunk_text) for chunk in chunks]
-        self._bm25 = BM25Okapi(tokenized)
+        self._bm25: BM25Okapi | None = None
+        if chunks:
+            tokenized = [self._tokenize(chunk.chunk_text) for chunk in chunks]
+            self._bm25 = BM25Okapi(tokenized)
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
@@ -28,7 +30,7 @@ class BM25Index:
         top_k: int = 20,
         policy_filter: Sequence[str] | None = None,
     ) -> list[tuple[PolicyChunk, float]]:
-        if not self.chunks:
+        if not self.chunks or self._bm25 is None:
             return []
 
         scores = self._bm25.get_scores(self._tokenize(query))

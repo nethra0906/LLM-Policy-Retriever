@@ -6,6 +6,7 @@ Run: streamlit run streamlit_app.py
 
 from __future__ import annotations
 
+import html
 import os
 
 import streamlit as st
@@ -785,7 +786,7 @@ def render_citations(citations: list[dict]) -> None:
         return
 
     for idx, cite in enumerate(citations, start=1):
-        label = cite.get("label", "Unknown source")
+        label = html.escape(str(cite.get("label", "Unknown source")))
         with st.expander(f"⟨{idx}⟩ {label}"):
             # Meta grid
             meta_items = [
@@ -796,8 +797,8 @@ def render_citations(citations: list[dict]) -> None:
             meta_html = "".join(
                 f"""
                 <div class="cite-meta-item">
-                    <div class="cite-meta-label">{k}</div>
-                    <div class="cite-meta-value">{v}</div>
+                    <div class="cite-meta-label">{html.escape(str(k))}</div>
+                    <div class="cite-meta-value">{html.escape(str(v))}</div>
                 </div>
                 """
                 for k, v in meta_items
@@ -811,7 +812,7 @@ def render_citations(citations: list[dict]) -> None:
             excerpt = cite.get("excerpt", "")
             if excerpt:
                 st.markdown(
-                    f'<div class="cite-excerpt">{excerpt}</div>',
+                    f'<div class="cite-excerpt">{html.escape(str(excerpt))}</div>',
                     unsafe_allow_html=True,
                 )
 
